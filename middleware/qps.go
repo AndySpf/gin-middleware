@@ -9,10 +9,10 @@ import (
 
 type circleTiming struct {
 	ticker   *time.Ticker
-	interval time.Duration
-	period   time.Duration
+	mapCount int
 	value    []*pathMap
 	curIndex int32
+	request  chan string
 	do       func(value []QPSInfo)
 }
 
@@ -33,29 +33,22 @@ var (
 )
 
 // QPSTotal 统计全部请求的qps
-func QPSTotal(doReport func(value []QPSInfo)) gin.HandlerFunc {
+func QPSTotal(interval time.Duration, doReport func(value []QPSInfo)) gin.HandlerFunc {
 	once.Do(func() {
-		circle = newDefaultCircle(doReport)
+		circle = newDefaultCircle(interval, doReport)
 		go circle.start()
 	})
 
 	return func(c *gin.Context) {
 		key := c.Request.Method + "|" + c.Request.URL.Path
-		index := atomic.LoadInt32(&circle.curIndex)
-		circle.value[index].Lock()
-		if _, ok := circle.value[index].qps[key]; ok {
-			circle.value[index].qps[key] = 0
-		}
-		circle.value[index].qps[key]++
-		circle.value[index].Unlock()
-
+		circle.request <- key
 		c.Next()
 	}
 }
 
-func newDefaultCircle(doReport func(value []QPSInfo)) *circleTiming {
-	paths := make([]*pathMap, 60)
-	tic := time.NewTicker(time.Second)
+func newDefaultCircle(interval time.Duration, doReport func(value []QPSInfo)) *circleTiming {
+	paths := make([]*pathMap, 16)
+	tic := time.NewTicker(interval)
 	for i := range paths {
 		paths[i] = &pathMap{
 			qps: map[string]int{},
@@ -63,36 +56,36 @@ func newDefaultCircle(doReport func(value []QPSInfo)) *circleTiming {
 	}
 	return &circleTiming{
 		ticker:   tic,
-		interval: time.Second,
-		period:   time.Minute,
+		mapCount: len(paths),
 		value:    paths,
 		do:       doReport,
+		request:  make(chan string, 1000),
 	}
 }
 
 func (p *circleTiming) start() {
-	select {
-	case <-p.ticker.C:
-		go p.report()
-		if p.curIndex+1 == int32(p.period/p.interval) {
-			atomic.StoreInt32(&p.curIndex, 0)
-		} else {
-			atomic.AddInt32(&p.curIndex, 1)
+	for {
+		select {
+		case <-p.ticker.C:
+			oldIndex := atomic.LoadInt32(&p.curIndex)
+			if oldIndex+1 == int32(p.mapCount) {
+				atomic.StoreInt32(&p.curIndex, 0)
+			} else {
+				atomic.AddInt32(&p.curIndex, 1)
+			}
+			go p.report(int(oldIndex))
+		case path := <-p.request:
+			index := atomic.LoadInt32(&circle.curIndex)
+			if _, ok := circle.value[index].qps[path]; !ok {
+				circle.value[index].qps[path] = 0
+			}
+			circle.value[index].qps[path]++
 		}
 	}
 }
 
-func (p *pathMap) resetQPSCount() {
-	p.Lock()
-	for key := range p.qps {
-		p.qps[key] = 0
-	}
-	p.Unlock()
-}
-
-func (p *circleTiming) report() {
-	index := atomic.LoadInt32(&p.curIndex)
-	p.value[index].RLock()
+func (p *circleTiming) report(index int) {
+	// mapCount * ticker 时间内清理不完，可能会和start函数中产生冲突
 	info := make([]QPSInfo, 0, len(p.value[index].qps))
 	for key := range p.value[index].qps {
 		info = append(info, QPSInfo{
@@ -100,9 +93,8 @@ func (p *circleTiming) report() {
 			Count: p.value[index].qps[key],
 		})
 	}
-	p.value[index].RUnlock()
 
 	p.do(info)
 
-	p.value[p.curIndex].resetQPSCount()
+	p.value[index].qps = map[string]int{}
 }

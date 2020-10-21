@@ -1,4 +1,4 @@
-module gin-middleware
+module ginmidd
 
 go 1.14
 

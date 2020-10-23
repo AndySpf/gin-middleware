@@ -11,8 +11,10 @@ import (
 )
 
 func main() {
+	middleware.QPSInit(time.Second*2, doReportQps)
+
 	h := gin.New()
-	h.Use(middleware.QPSTotal(time.Second*2, doReportQps))
+	h.Use(middleware.QPS())
 	h.GET("/test3", func(context *gin.Context) {
 		context.JSON(200, map[string]string{"msg": "ok1"})
 		return
@@ -44,7 +46,7 @@ func main() {
 
 var total = 0
 
-func doReportQps(value []middleware.QPSInfo) {
+func doReportQps(value []middleware.QPSInfo, total int) {
 	for i := range value {
 		total += value[i].Count
 	}

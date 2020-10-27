@@ -7,7 +7,7 @@ import (
 )
 
 var rule = map[time.Duration]int32{
-	time.Minute * 10: 200,
+	time.Minute * 10: 100,
 }
 
 type ipLimit struct {
